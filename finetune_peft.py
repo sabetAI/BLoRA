@@ -41,13 +41,13 @@ class PEFTArguments:
     mapping_hidden_dim: int = field(default=1024)
 
 
-def get_peft_config(peft_args: PEFTArguments, dtype):
+def get_peft_config(peft_args: PEFTArguments):
     if peft_args.peft_mode == "lora":
         peft_config = LoraConfig(
             task_type=TaskType.CAUSAL_LM, inference_mode=False,
             r=peft_args.lora_rank,
             lora_alpha=32, lora_dropout=0.1,
-            dtype=dtype,
+            # dtype=dtype,
         )
     elif peft_args.peft_mode == "prefix":
         peft_config = PrefixTuningConfig(
