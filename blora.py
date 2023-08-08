@@ -55,21 +55,6 @@ def forward(self, x: torch.Tensor):
 
         batch = list(zip(x, self.batch_lora_ids))
 
-        # x0, x1 = x[0], x[1]
-        # result0, result1 = result[0], result[1]
-
-        # lora_out = torch.stack(
-        #     [
-        #         self.scaling
-        #         * self.lora_B[lora_id](
-        #             self.lora_A[lora_id](self.lora_dropout[lora_id](x))
-        #         )
-        #         if lora_id in self.lora_A.keys()
-        #         else torch.zeros_like(result[0])
-        #         for x, lora_id in batch
-        #     ]
-        # )
-
         # rewrite as for loop
         lora_out = torch.zeros_like(result)
         for i, (x, lora_id) in enumerate(batch):
@@ -86,7 +71,6 @@ def forward(self, x: torch.Tensor):
         )
 
     result = result.to(previous_dtype)
-
     return result
 
 
