@@ -816,7 +816,7 @@ class StreamingPeftModel(PeftModel):
 
             # 11. run greedy search
             if stream_output:
-                yield self.greedy_search(
+                return self.greedy_search(
                     input_ids,
                     logits_processor=logits_processor,
                     stopping_criteria=stopping_criteria,
@@ -826,6 +826,7 @@ class StreamingPeftModel(PeftModel):
                     return_dict_in_generate=generation_config.return_dict_in_generate,
                     synced_gpus=synced_gpus,
                     streamer=streamer,
+                    stream_output=True,
                     **model_kwargs,
                 )
             else:
