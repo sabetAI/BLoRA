@@ -95,6 +95,20 @@ from peft import PeftConfig
 from accelerate.hooks import remove_hook_from_submodules
 from peft.utils.config import PromptLearningConfig
 
+from peft.utils import SAFETENSORS_WEIGHTS_NAME, WEIGHTS_NAME, hub_file_exists
+
+from accelerate.big_modeling import (
+    dispatch_model,
+    get_balanced_memory,
+    infer_auto_device_map,
+)
+
+from huggingface_hub.file_download import hf_hub_download, EntryNotFoundError
+from safetensors.torch import load_file as safe_load_file
+from peft.utils import set_peft_model_state_dict
+from accelerate.hooks import AlignDevicesHook, add_hook_to_module
+from transformers.generation.stopping_criteria import validate_stopping_criteria
+
 GenerateOutput = Union[
     GreedySearchOutput,
     SampleOutput,
@@ -291,17 +305,6 @@ class BatchStreamer(TextStreamer):
 
 
 class StreamingPeftModel(PeftModel):
-    def __init__(
-        self,
-        model: PreTrainedModel,
-        peft_config: PeftConfig,
-        adapter_name: str = "default",
-    ):
-        super().__init__(model, peft_config, adapter_name)
-        # self.base_model.generate = self.generate
-        # self.base_model.greedy_search = self.greedy_search
-        # self.base_model._validate_model_kwargs = self._validate_model_kwargs
-
     @classmethod
     def from_pretrained(
         cls,
@@ -1468,3 +1471,138 @@ class StreamingPeftModel(PeftModel):
     def _validate_model_kwargs(self, model_kwargs: Dict[str, Any]):
         # override validator to pass in extra inference kwargs
         pass
+
+    def load_adapter(
+        self,
+        model_id: str,
+        adapter_name: str,
+        is_trainable: bool = False,
+        **kwargs: Any,
+    ):
+        from peft.mapping import PEFT_TYPE_TO_CONFIG_MAPPING
+
+        hf_hub_download_kwargs, kwargs = self._split_kwargs(kwargs)
+
+        if adapter_name not in self.peft_config:
+            # load the config
+            peft_config = PEFT_TYPE_TO_CONFIG_MAPPING[
+                PeftConfig._get_peft_type(
+                    model_id,
+                    **hf_hub_download_kwargs,
+                )
+            ].from_pretrained(
+                model_id,
+                **hf_hub_download_kwargs,
+            )
+            if isinstance(peft_config, PromptLearningConfig) and is_trainable:
+                raise ValueError(
+                    "Cannot set a prompt learning adapter to trainable when loading pretrained adapter."
+                )
+            else:
+                peft_config.inference_mode = not is_trainable
+            self.add_adapter(adapter_name, peft_config)
+
+        # load weights if any
+        path = (
+            os.path.join(model_id, kwargs["subfolder"])
+            if kwargs.get("subfolder", None) is not None
+            else model_id
+        )
+
+        if os.path.exists(os.path.join(path, SAFETENSORS_WEIGHTS_NAME)):
+            filename = os.path.join(path, SAFETENSORS_WEIGHTS_NAME)
+            use_safetensors = True
+        elif os.path.exists(os.path.join(path, WEIGHTS_NAME)):
+            filename = os.path.join(path, WEIGHTS_NAME)
+            use_safetensors = False
+        else:
+            has_remote_safetensors_file = hub_file_exists(
+                model_id,
+                SAFETENSORS_WEIGHTS_NAME,
+                revision=hf_hub_download_kwargs.get("revision", None),
+                repo_type=hf_hub_download_kwargs.get("repo_type", None),
+            )
+            use_safetensors = has_remote_safetensors_file
+
+            if has_remote_safetensors_file:
+                # Priority 1: load safetensors weights
+                filename = hf_hub_download(
+                    model_id,
+                    SAFETENSORS_WEIGHTS_NAME,
+                    **hf_hub_download_kwargs,
+                )
+            else:
+                try:
+                    filename = hf_hub_download(
+                        model_id, WEIGHTS_NAME, **hf_hub_download_kwargs
+                    )
+                except EntryNotFoundError:
+                    raise ValueError(
+                        f"Can't find weights for {model_id} in {model_id} or in the Hugging Face Hub. "
+                        f"Please check that the file {WEIGHTS_NAME} or {SAFETENSORS_WEIGHTS_NAME} is present at {model_id}."
+                    )
+
+        if use_safetensors:
+            adapters_weights = safe_load_file(
+                filename, device="cuda" if torch.cuda.is_available() else "cpu"
+            )
+        else:
+            adapters_weights = torch.load(
+                filename,
+                map_location=torch.device(
+                    "cuda" if torch.cuda.is_available() else "cpu"
+                ),
+            )
+
+        # load the weights into the model
+        load_result = set_peft_model_state_dict(
+            self, adapters_weights, adapter_name=adapter_name
+        )
+        if (
+            (getattr(self, "hf_device_map", None) is not None)
+            and (
+                len(set(self.hf_device_map.values()).intersection({"cpu", "disk"})) > 0
+            )
+            and len(self.peft_config) == 1
+        ):
+            device_map = kwargs.get("device_map", "auto")
+            max_memory = kwargs.get("max_memory", None)
+            offload_dir = kwargs.get("offload_folder", None)
+            offload_index = kwargs.get("offload_index", None)
+
+            dispatch_model_kwargs = {}
+            # Safety checker for previous `accelerate` versions
+            # `offload_index` was introduced in https://github.com/huggingface/accelerate/pull/873/
+            if "offload_index" in inspect.signature(dispatch_model).parameters:
+                dispatch_model_kwargs["offload_index"] = offload_index
+
+            no_split_module_classes = self._no_split_modules
+
+            if device_map != "sequential":
+                max_memory = get_balanced_memory(
+                    self,
+                    max_memory=max_memory,
+                    no_split_module_classes=no_split_module_classes,
+                    low_zero=(device_map == "balanced_low_0"),
+                )
+            if isinstance(device_map, str):
+                device_map = infer_auto_device_map(
+                    self,
+                    max_memory=max_memory,
+                    no_split_module_classes=no_split_module_classes,
+                )
+            dispatch_model(
+                self,
+                device_map=device_map,
+                offload_dir=offload_dir,
+                **dispatch_model_kwargs,
+            )
+            hook = AlignDevicesHook(io_same_device=True)
+            if isinstance(self.peft_config[adapter_name], PromptLearningConfig):
+                remove_hook_from_submodules(self.prompt_encoder)
+            add_hook_to_module(self.get_base_model(), hook)
+
+        # Set model in evaluation mode to deactivate Dropout modules by default
+        if not is_trainable:
+            self.eval()
+        return load_result
