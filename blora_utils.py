@@ -305,6 +305,31 @@ class BatchStreamer(TextStreamer):
 
 
 class StreamingPeftModel(PeftModel):
+    def __init__(
+        self,
+        model: PreTrainedModel,
+        peft_config: PeftConfig,
+        adapter_name: str = "default",
+    ):
+        super().__init__(model, peft_config, adapter_name)
+        self.base_model = model
+        self.config = getattr(self.base_model, "config", {"model_type": "custom"})
+        self.modules_to_save = None
+        self.peft_config = {}
+        self.active_adapter = adapter_name
+        self.peft_type = peft_config.peft_type
+        if not isinstance(peft_config, PromptLearningConfig):
+            self.peft_config[adapter_name] = peft_config
+            self.base_model = BLoraModel(
+                self.base_model, self.peft_config, adapter_name
+            )
+            self.set_additional_trainable_modules(peft_config, adapter_name)
+        else:
+            self.add_adapter(adapter_name, peft_config)
+
+        if getattr(model, "is_gradient_checkpointing", True):
+            model = self._prepare_model_for_gradient_checkpointing(model)
+
     @classmethod
     def from_pretrained(
         cls,
@@ -1606,3 +1631,155 @@ class StreamingPeftModel(PeftModel):
         if not is_trainable:
             self.eval()
         return load_result
+
+
+from peft.peft_model import LoraModel
+from peft.tuners.lora import Linear4bit, Linear8bitLt, Embedding, Conv1D, Conv2d, Linear
+from peft.import_utils import is_bnb_4bit_available, is_bnb_available
+import bitsandbytes as bnb
+
+
+class BLoraModel(LoraModel):
+    def _create_new_module(self, lora_config, adapter_name, target):
+        bias = hasattr(target, "bias") and target.bias is not None
+        kwargs = {
+            "r": lora_config.r,
+            "lora_alpha": lora_config.lora_alpha,
+            "lora_dropout": lora_config.lora_dropout,
+            "fan_in_fan_out": lora_config.fan_in_fan_out,
+            "init_lora_weights": lora_config.init_lora_weights,
+        }
+        loaded_in_4bit = getattr(self.model, "is_loaded_in_4bit", False)
+        loaded_in_8bit = getattr(self.model, "is_loaded_in_8bit", False)
+
+        if loaded_in_8bit and isinstance(target, bnb.nn.Linear8bitLt):
+            eightbit_kwargs = kwargs.copy()
+            eightbit_kwargs.update(
+                {
+                    "has_fp16_weights": target.state.has_fp16_weights,
+                    "memory_efficient_backward": target.state.memory_efficient_backward,
+                    "threshold": target.state.threshold,
+                    "index": target.index,
+                }
+            )
+            new_module = Linear8bitLt(
+                adapter_name,
+                target.in_features,
+                target.out_features,
+                bias=bias,
+                **eightbit_kwargs,
+            )
+        elif (
+            loaded_in_4bit
+            and is_bnb_4bit_available()
+            and isinstance(target, bnb.nn.Linear4bit)
+        ):
+            fourbit_kwargs = kwargs.copy()
+            fourbit_kwargs.update(
+                {
+                    "compute_dtype": target.compute_dtype,
+                    "compress_statistics": target.weight.compress_statistics,
+                    "quant_type": target.weight.quant_type,
+                }
+            )
+            new_module = Linear4bit(
+                adapter_name,
+                target.in_features,
+                target.out_features,
+                bias=bias,
+                **fourbit_kwargs,
+            )
+        elif isinstance(target, torch.nn.Embedding):
+            embedding_kwargs = kwargs.copy()
+            embedding_kwargs.pop("fan_in_fan_out", None)
+            in_features, out_features = target.num_embeddings, target.embedding_dim
+            new_module = Embedding(
+                adapter_name, in_features, out_features, **embedding_kwargs
+            )
+        elif isinstance(target, torch.nn.Conv2d):
+            out_channels, in_channels = target.weight.size()[:2]
+            kernel_size = target.weight.size()[2:]
+            stride = target.stride
+            padding = target.padding
+            new_module = Conv2d(
+                adapter_name,
+                in_channels,
+                out_channels,
+                kernel_size,
+                stride,
+                padding,
+                **kwargs,
+            )
+        else:
+            if isinstance(target, torch.nn.Linear):
+                in_features, out_features = target.in_features, target.out_features
+                if kwargs["fan_in_fan_out"]:
+                    warnings.warn(
+                        "fan_in_fan_out is set to True but the target module is `torch.nn.Linear`. "
+                        "Setting fan_in_fan_out to False."
+                    )
+                    kwargs["fan_in_fan_out"] = lora_config.fan_in_fan_out = False
+            elif isinstance(target, Conv1D):
+                in_features, out_features = (
+                    target.weight.ds_shape
+                    if hasattr(target.weight, "ds_shape")
+                    else target.weight.shape
+                )
+                kwargs["is_target_conv_1d_layer"] = True
+                if not kwargs["fan_in_fan_out"]:
+                    warnings.warn(
+                        "fan_in_fan_out is set to False but the target module is `Conv1D`. "
+                        "Setting fan_in_fan_out to True."
+                    )
+                    kwargs["fan_in_fan_out"] = lora_config.fan_in_fan_out = True
+            else:
+                raise ValueError(
+                    f"Target module {target} is not supported. "
+                    f"Currently, only `torch.nn.Linear` and `Conv1D` are supported."
+                )
+            new_module = BLinear(
+                adapter_name, in_features, out_features, bias=bias, **kwargs
+            )
+
+        return new_module
+
+
+class BLinear(Linear):
+    def forward(self, x: torch.Tensor):
+        previous_dtype = x.dtype
+        if self.active_adapter not in self.lora_A.keys():
+            return F.linear(
+                x, transpose(self.weight, self.fan_in_fan_out), bias=self.bias
+            )
+        if self.disable_adapters:
+            if self.r[self.active_adapter] > 0 and self.merged:
+                self.unmerge()
+            result = F.linear(
+                x, transpose(self.weight, self.fan_in_fan_out), bias=self.bias
+            )
+        elif self.r[self.active_adapter] > 0 and not self.merged:
+            result = F.linear(
+                x, transpose(self.weight, self.fan_in_fan_out), bias=self.bias
+            )
+
+            x = x.to(self.lora_A[self.active_adapter].weight.dtype)
+
+            batch = list(zip(x, self.batch_lora_ids))
+
+            # rewrite as for loop
+            lora_out = torch.zeros_like(result)
+            for i, (x, lora_id) in enumerate(batch):
+                if lora_id in self.lora_A.keys():
+                    lora_out[i] = self.scaling[lora_id] * self.lora_B[lora_id](
+                        self.lora_A[lora_id](self.lora_dropout[lora_id](x))
+                    )
+
+            result += lora_out
+
+        else:
+            result = F.linear(
+                x, transpose(self.weight, self.fan_in_fan_out), bias=self.bias
+            )
+
+        result = result.to(previous_dtype)
+        return result
