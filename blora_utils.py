@@ -108,6 +108,23 @@ from safetensors.torch import load_file as safe_load_file
 from peft.utils import set_peft_model_state_dict
 from accelerate.hooks import AlignDevicesHook, add_hook_to_module
 from transformers.generation.stopping_criteria import validate_stopping_criteria
+from transformers.utils.hub import PushToHubMixin
+
+from peft.utils.config import PeftType
+from peft.tuners import (
+    LoraModel,
+    PromptEmbedding,
+    PromptEncoder,
+    PrefixEncoder,
+    AdaLoraModel,
+    AdaptionPromptModel,
+    IA3Model,
+)
+from peft.tuners.lora import LoraLayer
+
+from peft.tuners.lora import Linear4bit, Linear8bitLt, Embedding, Conv1D, Conv2d, Linear
+from peft.import_utils import is_bnb_4bit_available, is_bnb_available
+import bitsandbytes as bnb
 
 GenerateOutput = Union[
     GreedySearchOutput,
@@ -116,6 +133,17 @@ GenerateOutput = Union[
     BeamSampleOutput,
     ContrastiveSearchOutput,
 ]
+
+
+PEFT_TYPE_TO_MODEL_MAPPING = {
+    PeftType.LORA: LoraModel,
+    PeftType.PROMPT_TUNING: PromptEmbedding,
+    PeftType.P_TUNING: PromptEncoder,
+    PeftType.PREFIX_TUNING: PrefixEncoder,
+    PeftType.ADALORA: AdaLoraModel,
+    PeftType.ADAPTION_PROMPT: AdaptionPromptModel,
+    PeftType.IA3: IA3Model,
+}
 
 logger = logging.get_logger(__name__)
 
@@ -311,7 +339,9 @@ class StreamingPeftModel(PeftModel):
         peft_config: PeftConfig,
         adapter_name: str = "default",
     ):
-        super().__init__(model, peft_config, adapter_name)
+        # call super init on both PushToHubMixin, torch.nn.Module
+        PushToHubMixin.__init__(self)
+        torch.nn.Module.__init__(self)
         self.base_model = model
         self.config = getattr(self.base_model, "config", {"model_type": "custom"})
         self.modules_to_save = None
@@ -1633,13 +1663,89 @@ class StreamingPeftModel(PeftModel):
         return load_result
 
 
-from peft.peft_model import LoraModel
-from peft.tuners.lora import Linear4bit, Linear8bitLt, Embedding, Conv1D, Conv2d, Linear
-from peft.import_utils import is_bnb_4bit_available, is_bnb_available
-import bitsandbytes as bnb
+from peft.tuners.lora import mark_only_lora_as_trainable
+from peft.utils.other import _freeze_adapter, _get_submodules
 
 
 class BLoraModel(LoraModel):
+    def __init__(self, model, config, adapter_name):
+        torch.nn.Module.__init__(self)
+        self.model = model
+        self.forward = self.model.forward
+        self.peft_config = config
+        self.add_adapter(adapter_name, self.peft_config[adapter_name])
+
+        # transformers models have a .config attribute, whose presence is assumed later on
+        if not hasattr(self, "config"):
+            self.config = {"model_type": "custom"}
+
+    def add_adapter(self, adapter_name, config=None):
+        if config is not None:
+            model_config = getattr(self.model, "config", {"model_type": "custom"})
+            if hasattr(model_config, "to_dict"):
+                model_config = model_config.to_dict()
+
+            config = self._prepare_lora_config(config, model_config)
+            self.peft_config[adapter_name] = config
+        self._find_and_replace(adapter_name)
+        if len(self.peft_config) > 1 and self.peft_config[adapter_name].bias != "none":
+            raise ValueError(
+                "LoraModel supports only 1 adapter with bias. When using multiple adapters, set bias to 'none' for all adapters."
+            )
+        mark_only_lora_as_trainable(self.model, self.peft_config[adapter_name].bias)
+        if self.peft_config[adapter_name].inference_mode:
+            _freeze_adapter(self.model, adapter_name)
+
+    def _find_and_replace(self, adapter_name):
+        lora_config = self.peft_config[adapter_name]
+        self._check_quantization_dependency()
+        is_target_modules_in_base_model = False
+        key_list = [key for key, _ in self.model.named_modules()]
+
+        for key in key_list:
+            if not self._check_target_module_exists(lora_config, key):
+                continue
+
+            is_target_modules_in_base_model = True
+            parent, target, target_name = _get_submodules(self.model, key)
+
+            if isinstance(target, LoraLayer) and isinstance(target, torch.nn.Conv2d):
+                target.update_layer_conv2d(
+                    adapter_name,
+                    lora_config.r,
+                    lora_config.lora_alpha,
+                    lora_config.lora_dropout,
+                    lora_config.init_lora_weights,
+                )
+            elif isinstance(target, LoraLayer) and isinstance(
+                target, torch.nn.Embedding
+            ):
+                target.update_layer_embedding(
+                    adapter_name,
+                    lora_config.r,
+                    lora_config.lora_alpha,
+                    lora_config.lora_dropout,
+                    lora_config.init_lora_weights,
+                )
+
+            elif isinstance(target, LoraLayer):
+                target.update_layer(
+                    adapter_name,
+                    lora_config.r,
+                    lora_config.lora_alpha,
+                    lora_config.lora_dropout,
+                    lora_config.init_lora_weights,
+                )
+            else:
+                new_module = self._create_new_module(lora_config, adapter_name, target)
+                self._replace_module(parent, target_name, new_module, target)
+
+        if not is_target_modules_in_base_model:
+            raise ValueError(
+                f"Target modules {lora_config.target_modules} not found in the base model. "
+                f"Please check the target modules and try again."
+            )
+
     def _create_new_module(self, lora_config, adapter_name, target):
         bias = hasattr(target, "bias") and target.bias is not None
         kwargs = {
