@@ -18,7 +18,9 @@ Inject loras into base model from checkpoint paths
 ```
 from blora_utils import load_loras
 
-loras = ["jondurbin/airoboros-7b-gpt4-1.2-peft", "trl-lib/llama-7b-se-rl-peft", "winddude/wizardLM-LlaMA-LoRA-7B"]
+loras = ["jondurbin/airoboros-7b-gpt4-1.2-peft", 
+         "trl-lib/llama-7b-se-rl-peft",
+         "winddude/wizardLM-LlaMA-LoRA-7B"]
 model, lora_map = load_loras(model, loras)
 ```
 
@@ -46,12 +48,18 @@ Stream outputs
 ```
 outputs = []
 
-for out in model.generate(
-    **batch,
-    max_length=200,
-    stream_output=True
-):
+for out in model.generate(**batch, max_length=200, stream_output=True):
     outputs.append(out)
-    batch_decoded = tokenizer.batch_decode(torch.cat([out.reshape(-1, 1) for out in outputs], dim=1))
-    print("\n\n".join([lora + ":\n" + prompt + '\n' + decoded for (prompt, lora), decoded in zip(inputs, batch_decoded)]))
+    batch_decoded = tokenizer.batch_decode(
+        torch.cat([out.reshape(-1, 1) for out in outputs], dim=1)
+    )
+    print(
+        "\n\n".join(
+            [
+                lora + ":\n" + prompt + "\n" + decoded
+                for (prompt, lora), decoded in zip(inputs, batch_decoded)
+            ]
+        )
+    )
+
 ```
