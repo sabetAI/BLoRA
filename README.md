@@ -1,4 +1,4 @@
-# Batched LoRAs: 
+# Batched LoRAs
 
 Route generation through multiple LoRAs in the same batch
 
