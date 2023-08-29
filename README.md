@@ -1,50 +1,57 @@
-# Batched LoRAs: Customizable Batch Element Processing with Linked LoRAs
+# Batched LoRAs: Route generation through multiple loras in the same batch
 
-![Batched LoRAs](images/batched_loras.png)
+Usage:
 
-Welcome to the Batched LoRAs repository! This project focuses on a novel approach to enhance the capabilities of Language Models (LMs) by introducing Linked Local Response Aggregators (LoRAs) into the forward pass of a Language Model.
+Load base model
 
-## Overview
+```
+from transformers import LlamaForCausalLM, LlamaTokenizer
 
-Language Models, particularly Large Language Models (LLMs), have demonstrated impressive performance across various natural language processing tasks. However, there are scenarios where users might need to introduce specific custom behaviors into the model's predictions without extensive retraining. This repository presents a solution using Batched LoRAs.
+model_path = "decapoda-research/llama-7b-hf"
+model = transformers.LlamaForCausalLM.from_pretrained(model_path)
+tokenizer = transformers.LlamaTokenizer.from_pretrained(model_path)
+tokenizer.pad_token = 0
+```
 
-**Linked Local Response Aggregators (LoRAs)** are neural network modules designed to capture attention weights and introduce customizable residuals to the model's processing pipeline. These LoRAs are hooked into the attention mechanism of the Language Model and can modify the representation of a batch element as it traverses through the individual LoRAs. This provides a powerful way to influence the model's behavior for specific inputs.
+Inject loras into base model from checkpoint paths
 
-## How It Works
+```
+from blora_utils import load_loras
 
-1. **Batch Element Processing**: In the Batched LoRAs framework, a batch of input data is processed by the Language Model. Each input element in the batch is sent through the model's forward pass.
+loras = ["jondurbin/airoboros-7b-gpt4-1.2-peft", "trl-lib/llama-7b-se-rl-peft", "winddude/wizardLM-LlaMA-LoRA-7B"]
+model, lora_map = load_loras(model, loras)
+```
 
-2. **Linked LoRAs Integration**: At specified points within the forward pass of the Language Model, Linked LoRAs are integrated. These LoRAs are responsible for capturing attention weights and introducing customizable residuals.
+Prepare batch by side-loading lora batch ids into the model (hack)
 
-3. **Attention Weights and Residuals**: Linked LoRAs monitor the attention mechanism's behavior and can extract attention weights associated with different parts of the input sequence. Additionally, they add residuals to the input representation. This enables the introduction of custom behavior without extensive model retraining.
+```
+from blora_utils import prepare_batch
 
-4. **Customization with Minimal Training Cost**: By introducing modifications via Linked LoRAs and attention weights, users can achieve desired model behavior changes for specific inputs. This customization comes at a relatively low training cost compared to training the entire model from scratch.
+inputs = [('Outline a five sentence short story where a character stumbles upon a secret room in their house that contains relics from their future.',
+  'jondurbin/airoboros-7b-gpt4-1.2-peft'),
+ ('Write a 6 line dialogue between a character and a magical creature that only they can see.',
+  'trl-lib/llama-7b-se-rl-peft'),
+ ('Describe a four sentence scene where a character discovers a hidden talent that changes their life forever.',
+  'winddude/wizardLM-LlaMA-LoRA-7B'),
+ ('Sculpt a three verse poem about the feeling of walking through a lush, vibrant garden in full bloom.',
+  'trl-lib/llama-7b-se-rl-peft'),
+ ('Develop an eight sentence short story about a character who can bring their dreams into reality, but only for a limited time.',
+  'winddude/wizardLM-LlaMA-LoRA-7B')]
 
-## Repository Structure
+batch = prepare_batch(inputs, tokenizer, model, lora_map)
+```
 
-The repository is structured as follows:
+Stream outputs
 
-- `models/`: Contains the implementation of the Language Model architecture and the Linked LoRAs.
-- `data/`: Placeholder directory for storing example datasets or data processing scripts.
-- `examples/`: Jupyter notebooks or Python scripts showcasing the application of Batched LoRAs on various tasks.
-- `utils/`: Utility functions and helper scripts.
-- `images/`: Contains images used in this README.
+```
+outputs = []
 
-## Getting Started
-
-To experiment with Batched LoRAs, follow these steps:
-
-1. Set up your environment by installing the required dependencies listed in `requirements.txt`.
-
-2. Explore the `models/` directory to understand how Linked LoRAs are integrated into the forward pass of the Language Model.
-
-3. Check out the `examples/` directory for hands-on demonstrations of Batched LoRAs on different tasks.
-
-4. Modify and experiment with the Linked LoRAs' behavior to achieve your desired customizations.
-
-## Conclusion
-
-Batched LoRAs provide an innovative way to enhance Language Models' capabilities with minimal training cost. By introducing Linked LoRAs into the forward pass, attention weights can be manipulated and residuals can be added to achieve custom behavior for specific inputs. This repository serves as a starting point for exploring and utilizing Batched LoRAs in your own projects.
-
-Feel free to reach out for any questions or contributions. Happy experimenting with Batched LoRAs!
-
+for out in model.generate(
+    **batch,
+    max_length=200,
+    stream_output=True
+):
+    outputs.append(out)
+    batch_decoded = tokenizer.batch_decode(torch.cat([out.reshape(-1, 1) for out in outputs], dim=1))
+    print("\n\n".join([lora + ":\n" + prompt + '\n' + decoded for (prompt, lora), decoded in zip(inputs, batch_decoded)]))
+```
