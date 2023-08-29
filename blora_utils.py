@@ -148,6 +148,29 @@ PEFT_TYPE_TO_MODEL_MAPPING = {
 logger = logging.get_logger(__name__)
 
 
+def load_loras(model, loras):
+    # torch.nn.module throws error if lora name contains a dot
+    adapters = [lora.replace(".", "_") for lora in loras]
+    lora_map = {lora: adapter for lora, adapter in zip(loras, adapters)}
+    model = StreamingPeftModel.from_pretrained(
+        model, loras[0], adapter_name=adapters[0]
+    )
+    for lora, adapter in zip(loras[1:], adapters[1:]):
+        model = StreamingPeftModel.from_pretrained(
+            model.base_model.model, lora, adapter_name=adapter
+        )
+    return model, lora_map
+
+
+def prepare_batch(inputs, tokenizer, model, lora_map):
+    """Tokenizes inputs and sets the batch_lora_ids for the model."""
+    batch = tokenizer([inp[0] for inp in inputs], return_tensors="pt", padding=True)
+    inp_loras = [lora_map[inp[1]] for inp in inputs]
+    for _, module in model.named_modules():
+        module.batch_lora_ids = inp_loras
+    return batch
+
+
 def forward(self, x: torch.Tensor):
     previous_dtype = x.dtype
     if self.active_adapter not in self.lora_A.keys():
@@ -873,34 +896,19 @@ class StreamingPeftModel(PeftModel):
                 )
 
             # 11. run greedy search
-            if stream_output:
-                return self.greedy_search(
-                    input_ids,
-                    logits_processor=logits_processor,
-                    stopping_criteria=stopping_criteria,
-                    pad_token_id=generation_config.pad_token_id,
-                    eos_token_id=generation_config.eos_token_id,
-                    output_scores=generation_config.output_scores,
-                    return_dict_in_generate=generation_config.return_dict_in_generate,
-                    synced_gpus=synced_gpus,
-                    streamer=streamer,
-                    stream_output=True,
-                    **model_kwargs,
-                )
-            else:
-                return self.greedy_search(
-                    input_ids,
-                    logits_processor=logits_processor,
-                    stopping_criteria=stopping_criteria,
-                    pad_token_id=generation_config.pad_token_id,
-                    eos_token_id=generation_config.eos_token_id,
-                    output_scores=generation_config.output_scores,
-                    return_dict_in_generate=generation_config.return_dict_in_generate,
-                    synced_gpus=synced_gpus,
-                    streamer=streamer,
-                    stream_output=stream_output,
-                    **model_kwargs,
-                )
+            return self.greedy_search(
+                input_ids,
+                logits_processor=logits_processor,
+                stopping_criteria=stopping_criteria,
+                pad_token_id=generation_config.pad_token_id,
+                eos_token_id=generation_config.eos_token_id,
+                output_scores=generation_config.output_scores,
+                return_dict_in_generate=generation_config.return_dict_in_generate,
+                synced_gpus=synced_gpus,
+                streamer=streamer,
+                stream_output=stream_output,
+                **model_kwargs,
+            )
 
         elif is_contrastive_search_gen_mode:
             if generation_config.num_return_sequences > 1:
@@ -1889,3 +1897,4 @@ class BLinear(Linear):
 
         result = result.to(previous_dtype)
         return result
+
