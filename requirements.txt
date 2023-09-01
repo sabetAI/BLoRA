@@ -1,0 +1,7 @@
+peft==0.4.0
+bitsandbytes==0.41.1
+scipy==1.11.1
+sentencepiece==0.1.99
+protobuf==4.24.1
+transformers==4.32.1
+torch>=2.0.1

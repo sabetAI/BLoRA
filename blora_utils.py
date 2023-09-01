@@ -6,7 +6,7 @@ from typing import List, Optional, Tuple, Union, Callable
 import torch
 import torch.nn.functional as F
 import torch.utils.checkpoint
-from torch.nn import BCEWithLogitsLoss, CrossEntropyLoss
+from torch.nn import CrossEntropyLoss
 
 
 from transformers.activations import ACT2FN
@@ -15,7 +15,6 @@ from transformers.modeling_outputs import (
 )
 from transformers.modeling_utils import PreTrainedModel
 from transformers.utils import (
-    add_start_docstrings,
     add_start_docstrings_to_model_forward,
     logging,
     replace_return_docstrings,
@@ -123,7 +122,7 @@ from peft.tuners import (
 from peft.tuners.lora import LoraLayer
 
 from peft.tuners.lora import Linear4bit, Linear8bitLt, Embedding, Conv1D, Conv2d, Linear
-from peft.import_utils import is_bnb_4bit_available, is_bnb_available
+from peft.import_utils import is_bnb_4bit_available
 import bitsandbytes as bnb
 
 GenerateOutput = Union[
@@ -1897,4 +1896,3 @@ class BLinear(Linear):
 
         result = result.to(previous_dtype)
         return result
-
