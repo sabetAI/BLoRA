@@ -2,15 +2,24 @@
 
 Maximize GPU util by routing inference through multiple LoRAs in the same batch.
 
+Explainer by [@yacineMTB](https://twitter.com/yacineMTB/status/1698844951692419558?s=20).
 
-Explainer by [@yacineMTB](https://twitter.com/yacineMTB/status/1698844951692419558?s=20)
-<div style="display: flex; justify-content: center;" >
-<img alt="image" src="https://github.com/sabetAI/BLoRA/assets/28828395/da8afee2-5002-4490-8d5f-c17468bd6575", width="30%">
-<img alt="image" src="https://github.com/sabetAI/BLoRA/assets/28828395/d87da2f4-058e-49dd-af4a-7def01da94c6", width="30%">
-<img alt="image" src="https://github.com/sabetAI/BLoRA/assets/28828395/f046be86-3dfe-4812-9388-b3e6a870c5af", width="30%">
-</div>
-
-<hr />
+<table>
+  <tr>
+    <td align="center">
+      <img src="https://github.com/sabetAI/BLoRA/assets/28828395/a99a7503-e022-4012-84fb-4626d8a15cc5" alt="Image 1" />
+      <p>Trainable parameters for low rank layer adapters are small, and can all be held simultaneously in VRAM. Meaning, you can have the same base model, and change its behavior by swapping LoRAs. Huggingface's PEFT allows swapping adapters over their API.</p>
+    </td>
+    <td align="center">
+      <img src="https://github.com/sabetAI/BLoRA/assets/28828395/759326cb-d4da-402c-940b-ad479144b6e4" alt="Image 2"/>
+      <p>But what if you wanted to inference all of your adapters at the same time? The LoRA operation is pretty simple! It creates an output of the same shape as the adapted layer, and then adds them together. That has got to be broadcastable, right?</p>
+    </td>
+    <td align="center">
+      <img src="https://github.com/sabetAI/BLoRA/assets/28828395/b335b30c-438c-494b-ad74-65debcd1910e" alt="Image 3" />
+      <p>It is! If you have a matching number of LoRA adapters, you can fashion an operation to apply on each respective batch. Multiple models, that share the same weights.</p>
+    </td>
+  </tr>
+</table>
 
 Usage:
 
@@ -77,4 +86,6 @@ for out in model.generate(**batch, max_length=200, stream_output=True):
 
 https://github.com/sabetAI/BLoRA/assets/28828395/287b6cce-555e-4626-852c-1ad79672f27e
 
+# Acknowledgements
 
+Shout out to [@yacineMTB](https://twitter.com/yacineMTB/status/1698844951692419558?s=20) for reviewing 🙏.
