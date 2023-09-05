@@ -63,5 +63,8 @@ for out in model.generate(**batch, max_length=200, stream_output=True):
             ]
         )
     )
-
 ```
+
+https://github.com/sabetAI/BLoRA/assets/28828395/287b6cce-555e-4626-852c-1ad79672f27e
+
+
