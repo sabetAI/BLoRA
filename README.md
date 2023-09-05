@@ -21,20 +21,34 @@ Explainer by [@yacineMTB](https://twitter.com/yacineMTB/status/16988449516924195
   </tr>
 </table>
 
-Usage:
+## Usage:
+### 0. Clone the Repository
 
-1. Load base model
+To clone the repository using `git`, run:
+
+```bash
+git clone https://github.com/sabetAI/BLoRA.git
+cd BLoRA
+```
+
+Set Up a Virtual Environment (Recommended) and install required packages
+
+``` bash
+pip install -r requirements.txt
+```
+
+### 1. Load base model
 
 ``` python
 from transformers import LlamaForCausalLM, LlamaTokenizer
 
 model_path = "decapoda-research/llama-7b-hf"
 model = transformers.LlamaForCausalLM.from_pretrained(model_path, trust_remote_code=True)
-tokenizer = transformers.LlamaTokenizer.from_pretrained(model_path, trust_remote_code=True)
+tokenizer = transformers.LlamaTokenizer.from_pretrained(model_path)
 tokenizer.pad_token = 0
 ```
 
-2. Inject loras into base model from checkpoint paths
+### 2. Inject loras into base model from checkpoint paths
 
 ``` python
 from blora_utils import load_loras
@@ -45,7 +59,7 @@ loras = ["jondurbin/airoboros-7b-gpt4-1.2-peft",
 model, lora_map = load_loras(model, loras)
 ```
 
-3. Prepare batch by side-loading lora batch ids into the model (hack)
+### 3. Prepare batch by side-loading lora batch ids into the model (hack)
 
 ``` python
 from blora_utils import prepare_batch
@@ -64,7 +78,7 @@ inputs = [('Outline a five sentence short story where a character stumbles upon 
 batch = prepare_batch(inputs, tokenizer, model, lora_map)
 ```
 
-4. Stream outputs
+### 4. Stream outputs
 
 ``` python
 outputs = []
