@@ -23,7 +23,7 @@ Explainer by [@yacineMTB](https://twitter.com/yacineMTB/status/16988449516924195
 
 Usage:
 
-Load base model
+1. Load base model
 
 ```
 from transformers import LlamaForCausalLM, LlamaTokenizer
@@ -34,7 +34,7 @@ tokenizer = transformers.LlamaTokenizer.from_pretrained(model_path)
 tokenizer.pad_token = 0
 ```
 
-Inject loras into base model from checkpoint paths
+2. Inject loras into base model from checkpoint paths
 
 ```
 from blora_utils import load_loras
@@ -45,7 +45,7 @@ loras = ["jondurbin/airoboros-7b-gpt4-1.2-peft",
 model, lora_map = load_loras(model, loras)
 ```
 
-Prepare batch by side-loading lora batch ids into the model (hack)
+3. Prepare batch by side-loading lora batch ids into the model (hack)
 
 ```
 from blora_utils import prepare_batch
@@ -64,7 +64,7 @@ inputs = [('Outline a five sentence short story where a character stumbles upon 
 batch = prepare_batch(inputs, tokenizer, model, lora_map)
 ```
 
-Stream outputs
+4. Stream outputs
 
 ```
 outputs = []
@@ -88,4 +88,4 @@ https://github.com/sabetAI/BLoRA/assets/28828395/287b6cce-555e-4626-852c-1ad7967
 
 # Acknowledgements
 
-Shout out to [@yacineMTB](https://twitter.com/yacineMTB/status/1698844951692419558?s=20) for reviewing 🙏.
+Thanks to [@yacineMTB](https://twitter.com/yacineMTB/status/1698844951692419558?s=20) for reviewing 🙏.
