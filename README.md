@@ -1,6 +1,16 @@
 # Batched LoRAs
 
-Route generation through multiple LoRAs in the same batch
+Maximize GPU util by routing inference through multiple LoRAs in the same batch.
+
+
+Explainer by [@yacineMTB](https://twitter.com/yacineMTB/status/1698844951692419558?s=20)
+<div style="display: flex; justify-content: center;" >
+<img alt="image" src="https://github.com/sabetAI/BLoRA/assets/28828395/da8afee2-5002-4490-8d5f-c17468bd6575", width="30%">
+<img alt="image" src="https://github.com/sabetAI/BLoRA/assets/28828395/d87da2f4-058e-49dd-af4a-7def01da94c6", width="30%">
+<img alt="image" src="https://github.com/sabetAI/BLoRA/assets/28828395/f046be86-3dfe-4812-9388-b3e6a870c5af", width="30%">
+</div>
+
+<hr />
 
 Usage:
 
